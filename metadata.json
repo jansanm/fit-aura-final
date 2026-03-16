@@ -1,0 +1,7 @@
+{
+  "name": "Vitra AI - Virtual Try-On",
+  "description": "AI-powered 3D virtual try-on tool for online shopping. Generate a 3D avatar from your photo and see how clothes from major e-commerce sites look on you.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
