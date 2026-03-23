@@ -15,9 +15,9 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 // --- Meshy API (active) ---
 const MESHY_KEY = process.env.MESHY_API_KEY || "msy_dummy_api_key_for_test_mode_12345678";
 
-// --- Tripo3D API (commented out — re-enable when credits are available) ---
-// const TRIPO_API_KEY = process.env.TRIPO_API_KEY;
-// const BASE_URL = "https://api.tripo3d.ai/v2/openapi";
+// --- Tripo3D API (active) ---
+const TRIPO_API_KEY = process.env.TRIPO_API_KEY;
+const BASE_URL = "https://api.tripo3d.ai/v2/openapi";
 
 // Meshy helpers
 async function createMeshyTask(imageBuffer: Buffer, mimeType: string): Promise<string> {
@@ -73,48 +73,92 @@ async function startServer() {
   console.log("Server starting. MESHY_API_KEY present:", !!process.env.MESHY_API_KEY);
 
   // =========================================================
-  // Meshy API Endpoints (active)
+  // Tripo3D API Endpoints (Primary Engine)
   // =========================================================
   app.post("/api/generate-3d", upload.single("file"), async (req, res) => {
-    console.log("Received /api/generate-3d request (Meshy). File present:", !!req.file);
+    console.log("Received /api/generate-3d request (Tripo). File present:", !!req.file);
     try {
       if (!req.file) {
         return res.status(400).json({ error: "No file uploaded" });
       }
-      const taskId = await createMeshyTask(req.file.buffer, req.file.mimetype);
-      console.log("Meshy task created:", taskId);
-      res.json({ task_id: taskId, status: "processing" });
+      if (!TRIPO_API_KEY) {
+        return res.status(500).json({ error: "TRIPO_API_KEY not configured" });
+      }
+
+      // 1. Upload image to Tripo
+      const form = new FormData();
+      form.append("file", req.file.buffer, {
+        filename: req.file.originalname,
+        contentType: req.file.mimetype,
+      });
+      const uploadResp = await axios.post(`${BASE_URL}/upload`, form, {
+        headers: {
+          Authorization: `Bearer ${TRIPO_API_KEY}`,
+          ...form.getHeaders(),
+        },
+      });
+      const imageToken = uploadResp.data.data.image_token;
+
+      // 2. Create task
+      const taskResp = await axios.post(
+        `${BASE_URL}/task`,
+        {
+          type: "image_to_model",
+          file: { type: "jpg", file_token: imageToken },
+          model_version: "v2.5-20250123",
+          texture: true,
+          texture_quality: "standard",
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${TRIPO_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+      res.json({ task_id: taskResp.data.data.task_id, status: "processing" });
     } catch (error: any) {
-      console.error("Meshy generate-3d error:", error.message);
-      res.status(500).json({ error: error.message || "3D generation failed" });
+      const tripoError = error.response?.data;
+      console.error("Tripo Error:", tripoError || error.message);
+      res.status(500).json({ error: tripoError?.message || error.message });
     }
   });
 
   app.get("/api/task/:task_id", async (req, res) => {
     try {
       const { task_id } = req.params;
-      const data = await pollMeshyTask(task_id);
-      console.log("Meshy task poll:", task_id, "status:", data.status);
-
-      if (data.status === "SUCCEEDED") {
-        res.json({ status: "success", model_url: data.model_urls?.glb });
-      } else if (data.status === "FAILED" || data.status === "EXPIRED") {
-        res.status(500).json({ status: "failed", detail: data.task_error?.message || "3D generation failed" });
+      const resp = await axios.get(`${BASE_URL}/task/${task_id}`, {
+        headers: { Authorization: `Bearer ${TRIPO_API_KEY}` },
+      });
+      const data = resp.data.data;
+      console.log("Tripo task poll:", task_id, "status:", data.status);
+      if (data.status === "success") {
+        res.json({ status: "success", model_url: data.output.model, rendered_image: data.output.rendered_image });
+      } else if (data.status === "failed") {
+        res.status(500).json({ status: "failed", detail: "3D generation failed" });
       } else {
-        // PENDING or IN_PROGRESS
-        res.json({ status: "processing", progress: data.progress || 0 });
+        res.json({ status: data.status, progress: data.progress || 0 });
       }
     } catch (error: any) {
-      console.error("Meshy poll error:", error.message);
-      res.status(500).json({ error: error.message });
+      console.error("Task Status Error:", error.response?.data || error.message);
+      res.status(500).json({ error: error.response?.data || error.message });
     }
   });
 
-  // =========================================================
-  // Tripo3D API Endpoints (commented out — re-enable when credits available)
-  // To re-enable: uncomment below, comment out Meshy endpoints above,
-  // and restore TRIPO_API_KEY + BASE_URL at the top of the file.
-  // =========================================================
+  app.get("/api/proxy-model", async (req, res) => {
+    try {
+      const { url } = req.query;
+      if (!url) return res.status(400).send("URL required");
+      console.log("Proxying model from:", url);
+      const response = await axios.get(url as string, { responseType: "stream" });
+      res.setHeader("Content-Type", "model/gltf-binary");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      response.data.pipe(res);
+    } catch (error: any) {
+      console.error("Proxy error:", error.message);
+      res.status(500).send(error.message);
+    }
+  });
   //
   // app.post("/api/generate-3d-tripo", upload.single("file"), async (req, res) => {
   //   console.log("Received /api/generate-3d request (Tripo). File present:", !!req.file);

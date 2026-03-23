@@ -24,6 +24,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [productUrl, setProductUrl] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [fileToGenerate, setFileToGenerate] = useState<File | null>(null);
 
   const pollTask = async (taskId: string, type: 'avatar' | 'product') => {
     const interval = setInterval(async () => {
@@ -34,9 +35,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
         if (data.status === 'success') {
           clearInterval(interval);
           if (type === 'avatar') {
-            setAvatar(prev => prev ? { ...prev, modelUrl: data.model_url } : null);
+            const proxiedUrl = `/api/proxy-model?url=${encodeURIComponent(data.model_url)}`;
+            setAvatar(prev => prev ? { ...prev, modelUrl: proxiedUrl } : null);
           } else if (type === 'product') {
-            setActiveProduct(prev => prev ? { ...prev, modelUrl: data.model_url } : null);
+            const proxiedUrl = `/api/proxy-model?url=${encodeURIComponent(data.model_url)}`;
+            setActiveProduct(prev => prev ? { ...prev, modelUrl: proxiedUrl } : null);
           }
         } else if (data.status === 'failed') {
           clearInterval(interval);
@@ -110,28 +113,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
       };
       
       setAvatar(newAvatar);
+      setFileToGenerate(file);
       setState('ready');
-      console.log('State updated to ready, starting Tripo 3D generation...');
-
-      // 3. Generate 3D model with Tripo
-      const formData = new FormData();
-      formData.append('file', file);
-      
-      const tripoResp = await fetch('/api/generate-3d', {
-        method: 'POST',
-        body: formData
-      });
-      
-      if (!tripoResp.ok) {
-        const errorData = await tripoResp.json();
-        throw new Error(errorData.error || 'Tripo 3D generation failed');
-      }
-      
-      const tripoData = await tripoResp.json();
-      console.log('Tripo task created:', tripoData);
-      if (tripoData.task_id) {
-        pollTask(tripoData.task_id, 'avatar');
-      }
+      console.log('Avatar photo ready. User must click Generate to start 3D process.');
     } catch (error: any) {
       console.error('Error in avatar creation:', error);
       const msg = typeof error.message === 'string' ? error.message : JSON.stringify(error.message) || 'Failed to create avatar';
@@ -139,8 +123,42 @@ export const Sidebar: React.FC<SidebarProps> = ({
       setState('idle');
     } finally {
       setIsProcessing(false);
-      // Reset input value so the same file can be selected again
       e.target.value = '';
+    }
+  };
+
+  const handleGenerate3D = async () => {
+    if (!fileToGenerate || !avatar) return;
+
+    setIsProcessing(true);
+    setState('creating-avatar');
+    setAvatar(prev => prev ? { ...prev, modelUrl: undefined } : null);
+    try {
+      console.log('Starting high-fidelity 3D generation...');
+      const formData = new FormData();
+      formData.append('file', fileToGenerate);
+      
+      const response = await fetch('/api/generate-3d', {
+        method: 'POST',
+        body: formData
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || '3D generation failed');
+      }
+      
+      const data = await response.json();
+      console.log('Meshy task created:', data);
+      if (data.task_id) {
+        pollTask(data.task_id, 'avatar');
+      }
+    } catch (error: any) {
+      console.error('Error in 3D generation:', error);
+      alert(`3D Generation Error: ${error.message}`);
+    } finally {
+      setIsProcessing(false);
+      setFileToGenerate(null);
     }
   };
 
@@ -276,28 +294,65 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
           ) : (
             <div className="flex flex-col gap-3">
-              <div className="flex items-center gap-3 p-3 bg-black/[0.02] rounded-xl border border-black/5">
-                <img src={avatar.photoUrl} alt="Avatar" className="w-12 h-12 rounded-lg object-cover" />
-                <div className="flex flex-col">
-                  <span className="text-xs font-bold">Digital Twin Ready</span>
-                  <span className="text-[10px] text-black/40">Based on uploaded photo</span>
-                </div>
+              <div className="relative group overflow-hidden rounded-2xl border-4 border-[#2E57A5] shadow-2xl bg-black/5">
+                <img src={avatar.photoUrl} alt="Avatar Source" className="w-full aspect-square object-cover" />
+                
+                {fileToGenerate && (
+                  <div className="absolute inset-0 bg-black/40 flex flex-col items-center justify-end p-4 backdrop-blur-[2px]">
+                    <motion.button 
+                      initial={{ y: 20, opacity: 0 }}
+                      animate={{ y: 0, opacity: 1 }}
+                      onClick={handleGenerate3D}
+                      className="w-full py-4 bg-[#FFD700] hover:bg-[#FFC000] text-black font-black text-sm rounded-xl shadow-[0_0_30px_rgba(255,215,0,0.4)] transition-all flex items-center justify-center gap-2 uppercase tracking-widest"
+                    >
+                      {isProcessing ? (
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                      ) : (
+                        <>
+                          <Sparkles className="w-4 h-4" />
+                          Generate 3D
+                        </>
+                      )}
+                    </motion.button>
+                  </div>
+                )}
+
+                {!fileToGenerate && !avatar.modelUrl && (
+                  <div className="absolute top-2 right-2">
+                    <div className="bg-amber-500 text-white text-[8px] font-bold px-2 py-1 rounded-full uppercase tracking-tighter flex items-center gap-1 shadow-lg">
+                      <Loader2 className="w-2 h-2 animate-spin" />
+                      Processing 3D...
+                    </div>
+                  </div>
+                )}
+                
+                {avatar.modelUrl && (
+                  <div className="absolute top-2 right-2">
+                    <div className="bg-emerald-500 text-white text-[8px] font-bold px-2 py-1 rounded-full uppercase tracking-tighter flex items-center gap-1 shadow-lg">
+                      <CheckCircle2 className="w-2 h-2" />
+                      Model Ready
+                    </div>
+                  </div>
+                )}
               </div>
+
               <div className="grid grid-cols-2 gap-2">
-                <div className="p-2 bg-black/[0.02] rounded-lg border border-black/5 flex flex-col">
-                  <span className="text-[9px] uppercase text-black/40 font-bold">Height</span>
-                  <span className="text-xs font-mono">{avatar.measurements.height} cm</span>
+                <div className="p-3 bg-black/[0.04] rounded-xl border border-black/5 flex flex-col backdrop-blur-sm">
+                  <span className="text-[9px] uppercase text-black/40 font-black tracking-widest">Height</span>
+                  <span className="text-sm font-bold font-mono">{avatar.measurements.height} cm</span>
                 </div>
-                <div className="p-2 bg-black/[0.02] rounded-lg border border-black/5 flex flex-col">
-                  <span className="text-[9px] uppercase text-black/40 font-bold">Waist</span>
-                  <span className="text-xs font-mono">{avatar.measurements.waist} cm</span>
+                <div className="p-3 bg-black/[0.04] rounded-xl border border-black/5 flex flex-col backdrop-blur-sm">
+                  <span className="text-[9px] uppercase text-black/40 font-black tracking-widest">Waist</span>
+                  <span className="text-sm font-bold font-mono">{avatar.measurements.waist} cm</span>
                 </div>
               </div>
+
               <button 
-                onClick={() => { setAvatar(null as any); setState('idle'); }}
-                className="text-[10px] text-black/40 hover:text-black underline text-left"
+                onClick={() => { setAvatar(null); setFileToGenerate(null); setState('idle'); }}
+                className="text-[10px] text-black/40 hover:text-black font-bold uppercase tracking-widest text-left px-1 transition-colors"
+                disabled={isProcessing}
               >
-                Reset Avatar
+                ← Delete & Re-upload
               </button>
             </div>
           )}
